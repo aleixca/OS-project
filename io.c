@@ -4,8 +4,7 @@
 #include <ctype.h>
 
 
-void to_upper_inplace(char *s) {
-    if (!s) return;
+void to_upper(char *s) {
     for (size_t i = 0; s[i] != '\0'; i++) {
         s[i] = (char)toupper((unsigned char)s[i]);
     }
