@@ -5,18 +5,16 @@
 
 int stop_program = 0;
 
-void signal_handler(){
-
+void signal_handler(int sig){
+  (void)sig;
   write(1, "Exiting program gracefully...\n", strlen("Exiting program gracefully...\n"));
-   stop_program = 1
+   stop_program = 1;
 
 }
 
-
-int main (){
-
-
-  signal(SIGINT, signal_handler);
-
-return 0;
+void setup_signal(void) {
+    signal(SIGINT, signal_handler);
 }
+
+
+
