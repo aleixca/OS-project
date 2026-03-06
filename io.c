@@ -8,30 +8,66 @@ void to_upper(char *s) {
     }
 }
 
+char *readUntil(int fd, char separator) {
+    char ch;
+    int i = 0;
+    int capacity = 16;
 
-int read_line(int fd, char *buf, int max) {
-    if (!buf || max < 2) {
-        return 0;
+    char *buffer = malloc(capacity);
+    if (buffer == NULL) {
+        return NULL;
     }
 
-    int i = 0;
-    while (i < max - 1) {
-        char c;
-        int r = (int)read(fd, &c, 1);
-        
-        if (r <= 0) {
-            break;       // EOF or error
+    while (read(fd, &ch, 1) == 1) {
+        if (ch == separator) {
+            buffer[i] = '\0';
+            return buffer;
         }
 
-        buf[i++] = c;
+        if (i >= capacity - 1) {
+            capacity *= 2;
+            char *new_buf = realloc(buffer, capacity);
+            if (new_buf == NULL) {
+                free(buffer);
+                return NULL;
+            }
+            buffer = new_buf;
+        }
 
-        if (c == '\n'){
-            break;              // Stop at newline
-        }    
+        buffer[i++] = ch;
     }
 
-    buf[i] = '\0';
-    return i;
+    /* EOF or error */
+    if (i == 0) {
+        free(buffer);
+        return NULL;
+    }
+
+    buffer[i] = '\0';
+    return buffer;
+}
+
+char *read_screen(){
+    char c;
+    int numOfChars = 0;
+    int bytes;
+    char *command;
+
+    char *word = (char *)malloc(1);
+    bytes = read(0, &c, 1);
+    while (bytes > 0 && c != '\n') {
+        char *tmp = (char *)realloc(word, (size_t)numOfChars + 2); // +1 for new char, +1 for '\0'
+
+        word = tmp;
+
+        word[numOfChars] = c;
+        numOfChars++;
+
+        bytes = read(0, &c, 1);
+    }
+    word[numOfChars] = '\0';
+    command = word;
+    return command;
 }
 
 
