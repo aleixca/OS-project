@@ -77,8 +77,3 @@ void free_inventory(Product *products) {
     products = NULL;
 }
 
-
-void free_inventory(Product *products) {
-    free(products);
-    products = NULL;
-}

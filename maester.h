@@ -34,7 +34,4 @@ Maester read_Maester(char *path);
 void list_realms(Maester maester);
 void free_Maester(Maester maester);
 #endif
-void readMaester(char **argv);
-void list_realms(int realm_count);
 
-#endif

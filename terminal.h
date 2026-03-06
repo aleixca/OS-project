@@ -6,6 +6,7 @@
 #include "signal.h"
 #include "maester.h"
 #include "inventory.h"
+#include "pledge.h"
 
 
 #include <string.h>

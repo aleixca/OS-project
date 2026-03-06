@@ -4,6 +4,7 @@
 #include "io.h"
 #include "maester.h"
 #include "inventory.h"
+#include "pledge.h"
 
 
 #include <stdio.h>

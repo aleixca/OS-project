@@ -69,8 +69,3 @@ char *read_screen(){
     command = word;
     return command;
 }
-
-
-
-
-
