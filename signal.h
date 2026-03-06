@@ -1,11 +1,17 @@
 #ifndef SIGNAL_H
 #define SIGNAL_H
 
+#include "io.h"
+#include "maester.h"
+
 #include <string.h>
 #include <unistd.h>
 
+
 #include <signal.h>
 
-int signal_handler(int);
+
+void setup_signal(void);
+int  stop_requested(void);
 
 #endif
