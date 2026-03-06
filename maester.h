@@ -1,11 +1,15 @@
 #ifndef MAESTER_H
 #define MAESTER_H
-#include "io.h"
-#include "signal.h"
-#include "terminal.h"
+#define _GNU_SOURCE
 
-#include <string.h>
+
+#include "io.h"
+
+
+#include <fcntl.h>   
 #include <unistd.h>
+#include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 
 typedef struct  {
@@ -22,8 +26,14 @@ char *listen_ip;
 int listen_port; 
 Route *routes;
 int route_count;
+int stop_program;
+int total_products;
 } Maester;
 
+Maester read_Maester(char *path);
+void list_realms(Maester maester);
+void free_Maester(Maester maester);
+#endif
 void readMaester(char **argv);
 void list_realms(int realm_count);
 
