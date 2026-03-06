@@ -6,6 +6,7 @@
 #include <ctype.h>
 #include <stddef.h>
 #include <sys/types.h>
+#include <stdlib.h>
 
 
 
@@ -13,6 +14,8 @@
 
 void to_upper(char *str);
 
-int read_line(int fd, char *buf, int max);
+char *readUntil(int fd, char separator);
+
+char *read_screen();
 
 #endif
