@@ -4,7 +4,6 @@
 #include "io.h"
 #include "maester.h"
 #include "inventory.h"
-#include "pledge.h"
 
 
 #include <stdio.h>
@@ -27,17 +26,14 @@ int main(int argc, char *argv[]){
     }
 
     
-    setup_signal();
-
+        setup_signal();
         maester = read_Maester(argv[1]);
         products = load_inventory(argv[2], &total_products);
         terminal(total_products, products, maester);
     
-    
-
     free_inventory(products);
     free_Maester(maester);
-
+    
 
     return 0;
 }
