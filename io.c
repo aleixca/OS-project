@@ -8,6 +8,35 @@ void to_upper(char *s) {
     }
 }
 
+
+char *add_newline(char *str) {
+    int len = strlen(str);
+
+    char *tmp = realloc(str, len + 2);   
+    if (tmp == NULL) {
+        free(str);
+        return NULL;
+    }
+
+    str = tmp;
+    str[len] = '\n';
+    str[len + 1] = '\0';
+    return str;
+} 
+
+
+
+void remove_slashr(char *s) {
+    int i = 0;
+    while (s[i] != '\0') {
+        if (s[i] == '\r') {
+            s[i] = '\0';
+            return;
+        }
+        i++;
+    }
+}
+
 char *readUntil(int fd, char separator) {
     char ch;
     int i = 0;
@@ -47,25 +76,39 @@ char *readUntil(int fd, char separator) {
     return buffer;
 }
 
-char *read_screen(){
+char *read_screen() {
     char c;
     int numOfChars = 0;
     int bytes;
-    char *command;
+    char *word = malloc(1);
 
-    char *word = (char *)malloc(1);
-    bytes = read(0, &c, 1);
-    while (bytes > 0 && c != '\n') {
-        char *tmp = (char *)realloc(word, (size_t)numOfChars + 2); // +1 for new char, +1 for '\0'
+    if (word == NULL) {
+        return NULL;
+    }
+
+    while (1) {
+        bytes = read(0, &c, 1);
+
+        if (bytes <= 0) {
+            free(word);
+            return NULL;
+        }
+
+        if (c == '\n') {
+            break;
+        }
+
+        char *tmp = realloc(word, numOfChars + 2);
+        if (tmp == NULL) {
+            free(word);
+            return NULL;
+        }
 
         word = tmp;
-
         word[numOfChars] = c;
         numOfChars++;
-
-        bytes = read(0, &c, 1);
     }
+
     word[numOfChars] = '\0';
-    command = word;
-    return command;
+    return word;
 }
