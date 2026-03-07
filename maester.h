@@ -32,6 +32,10 @@ int total_products;
 
 Maester read_Maester(char *path);
 void list_realms(Maester maester);
+void exit_maester(Maester maester);
+void free_Maester(Maester maester);
+#endif
+void list_realms(Maester maester);
 void free_Maester(Maester maester);
 #endif
 
