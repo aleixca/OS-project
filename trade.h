@@ -1,16 +1,17 @@
 #ifndef TRADE_H
 #define TRADE_H
 #define _GNU_SOURCE
-
-#include "io.h"
-#include "maester.h"
-#include "inventory.h"
-
-#include <fcntl.h>
+#include <stdlib.h>
 #include <unistd.h>
-#include <stdio.h>
+#include <fcntl.h>
 #include <string.h>
+#include <stdio.h>
+#include "io.h"
 
+typedef struct {
+    char *name;
+    int amount;
+} TradeItem;
 
 void start_trade(char *realm);
 
