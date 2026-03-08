@@ -1,8 +1,16 @@
 #include "terminal.h"
 
 
-
-
+/********************
+ *
+ * @Name: terminal
+ * @Def: Main terminal interface for user interaction.
+ * @Arg: total_products = total number of products
+ *       products = pointer to the array of products
+ *       maester = the Maester instance
+ * @Ret: None
+ *
+ ********************/
 void terminal(int total_products, Product *products, Maester maester) {
     int exit = 0;
     char *realm = NULL;

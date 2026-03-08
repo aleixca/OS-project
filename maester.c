@@ -1,6 +1,13 @@
 #include "maester.h"
 
-
+/********************
+ *
+ * @Name: read_Maester
+ * @Def: Reads a Maester configuration from a file.
+ * @Arg: path = path to the configuration file
+ * @Ret: A Maester structure populated with the configuration, or an empty structure on failure.
+ *
+ ********************/
 Maester read_Maester(char *path){
     Maester maester;
     char *buf;
@@ -91,8 +98,14 @@ Maester read_Maester(char *path){
     return maester;
 }
 
-
-
+/********************
+ *
+ * @Name: list_realms
+ * @Def: Lists all realms in the Maester configuration.
+ * @Arg: maester = Maester structure containing the configuration
+ * @Ret: None
+ *
+ ********************/
 void list_realms(Maester maester) {
     int i = 0;
 
@@ -109,6 +122,14 @@ void list_realms(Maester maester) {
 
 }
 
+/********************
+ *
+ * @Name: exit_maester
+ * @Def: Cleans up and exits the Maester application.
+ * @Arg: maester = Maester structure containing the configuration
+ * @Ret: None
+ *
+ ********************/
 void exit_maester(Maester maester) {
     char *output;
 
@@ -120,6 +141,14 @@ void exit_maester(Maester maester) {
 
 }
 
+/********************
+ *
+ * @Name: free_Maester
+ * @Def: Frees all resources associated with a Maester structure.
+ * @Arg: maester = Maester structure to free
+ * @Ret: None
+ *
+ ********************/
 void free_Maester(Maester maester) {
     free(maester.realm_name);
     free(maester.user_dir);

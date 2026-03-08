@@ -1,14 +1,28 @@
 #include "io.h"
 
 
-
+/********************
+ *
+ * @Name: to_upper
+ * @Def: Converts a string to uppercase.
+ * @Arg: s = pointer to the string to convert
+ * @Ret: None
+ *
+ ********************/
 void to_upper(char *s) {
     for (int i = 0; s[i] != '\0'; i++) {
         s[i] = (char)toupper((char)s[i]);
     }
 }
 
-
+/********************
+ *
+ * @Name: add_newline
+ * @Def: Adds a newline character to the end of a string.
+ * @Arg: str = pointer to the string to modify
+ * @Ret: Pointer to the modified string, or NULL when it fails
+ *
+ ********************/
 char *add_newline(char *str) {
     int len = strlen(str);
 
@@ -24,8 +38,14 @@ char *add_newline(char *str) {
     return str;
 } 
 
-
-
+/********************
+ *
+ * @Name: remove_slashr
+ * @Def: Removes the carriage return character from a string.
+ * @Arg: s = pointer to the string to modify
+ * @Ret: None
+ *
+ ********************/
 void remove_slashr(char *s) {
     int i = 0;
     while (s[i] != '\0') {
@@ -37,6 +57,15 @@ void remove_slashr(char *s) {
     }
 }
 
+/********************
+ *
+ * @Name: readUntil
+ * @Def: Reads characters from a file descriptor until a specified separator is encountered.
+ * @Arg: fd = file descriptor to read from
+ *       separator = character that indicates the end of reading
+ * @Ret: Pointer to the read string, or NULL when it fails
+ *
+ ********************/
 char *readUntil(int fd, char separator) {
     char ch;
     int i = 0;
@@ -76,6 +105,14 @@ char *readUntil(int fd, char separator) {
     return buffer;
 }
 
+/********************
+ *
+ * @Name: read_screen
+ * @Def: Reads a line of input from the user.
+ * @Arg: None
+ * @Ret: Pointer to the read string, or NULL when it fails.
+ *
+ ********************/
 char *read_screen() {
     char c;
     int numOfChars = 0;

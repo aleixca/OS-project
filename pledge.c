@@ -3,6 +3,14 @@
 static Pledge pledges[MAX_PLEDGES];
 static int pledge_count = 0;
 
+/********************
+ *
+ * @Name: init_pledges
+ * @Def: Initializes the pledge system.
+ * @Arg: None
+ * @Ret: None
+ *
+ ********************/
 void init_pledges(void) {
     pledge_count = 0;
     for (int i = 0; i < MAX_PLEDGES; i++) {
@@ -11,6 +19,14 @@ void init_pledges(void) {
     }
 }
 
+/********************
+ *
+ * @Name: add_pledge
+ * @Def: Adds a new pledge to the system.
+ * @Arg: realm = name of the realm to pledge
+ * @Ret: 0 on success, -1 on failure
+ *
+ ********************/
 int add_pledge(char *realm) {
     if (pledge_count >= MAX_PLEDGES) {
         return -1;
@@ -30,6 +46,14 @@ int add_pledge(char *realm) {
     return pledge_count;
 }
 
+/********************
+ *
+ * @Name: show_pledge_status
+ * @Def: Displays the status of all pledges.
+ * @Arg: None
+ * @Ret: None
+ *
+ ********************/
 void show_pledge_status(void) {
     char *output;
     int len;
@@ -54,6 +78,14 @@ void show_pledge_status(void) {
     }
 }
 
+/********************
+ *
+ * @Name: get_pledge_status
+ * @Def: Retrieves the status of a specific pledge.
+ * @Arg: realm = name of the realm to check
+ * @Ret: Status of the pledge (0: PENDING, 1: ALLIED, 2: FAILED), or -1 if not found
+ *
+ ********************/
 int get_pledge_status(char *realm) {
     for (int i = 0; i < pledge_count; i++) {
         if (strcmp(pledges[i].realm_name, realm) == 0) {
@@ -63,6 +95,15 @@ int get_pledge_status(char *realm) {
     return -1;
 }
 
+/********************
+ *
+ * @Name: update_pledge_status
+ * @Def: Updates the status of a specific pledge.
+ * @Arg: realm = name of the realm to update
+ *     status = new status of the pledge (0: PENDING, 1: ALLIED, 2: FAILED)
+ * @Ret: None
+ *
+ ********************/
 void update_pledge_status(char *realm, int status) {
     for (int i = 0; i < pledge_count; i++) {
         if (strcmp(pledges[i].realm_name, realm) == 0) {
@@ -72,6 +113,14 @@ void update_pledge_status(char *realm, int status) {
     }
 }
 
+/********************
+ *
+ * @Name: get_pledge_realm
+ * @Def: Retrieves the realm name of a specific pledge.
+ * @Arg: index = index of the pledge to retrieve
+ * @Ret: Realm name of the pledge, or NULL if not found
+ *
+ ********************/
 char *get_pledge_realm(int index) {
     if (index >= 0 && index < pledge_count) {
         return pledges[index].realm_name;
@@ -79,6 +128,14 @@ char *get_pledge_realm(int index) {
     return NULL;
 }
 
+/********************
+ *
+ * @Name: get_pledge_count
+ * @Def: Retrieves the total number of active pledges.
+ * @Arg: None
+ * @Ret: Total number of active pledges
+ *
+ ********************/
 int get_pledge_count(void) {
     return pledge_count;
 }
