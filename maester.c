@@ -48,6 +48,10 @@ Maester read_Maester(char *path){
     remove_slashr(buf);
     free(buf);
 
+    buf = readUntil(fd, '\n'); //read trash line Default
+    remove_slashr(buf);
+    free(buf);
+
     while ((buf = readUntil(fd, ' ')) != NULL) {
         Route temp;
         for (int j = 0; buf[j] != '\0'; j++) {
