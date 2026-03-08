@@ -1,6 +1,14 @@
 #include "commands.h"
 
-
+/********************
+ *
+ * @Name: parse_command
+ * @Def: Parses the user input command and determines the
+ *       corresponding action to be taken
+ * @Arg: realm = pointer to the realm string
+ * @Ret: The command type as an integer.
+ *
+ ********************/
 int parse_command(char **realm) {
     char *command = NULL;
     char *w1, *w2, *w3, *w4, *w5;

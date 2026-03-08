@@ -1,6 +1,13 @@
 #include "trade.h"
 
-
+/********************
+ *
+ * @Name: valid_product
+ * @Def: Checks if a product is valid.
+ * @Arg: product = name of the product to check
+ * @Ret: 1 if valid, 0 otherwise
+ *
+ ********************/
 int valid_product(char *product) {
     char *product_list[] = {
         "MYRISH LACE",
@@ -19,6 +26,16 @@ int valid_product(char *product) {
     return 0;
 }
 
+/********************
+ *
+ * @Name: find_product
+ * @Def: Finds a product in the trade items.
+ * @Arg: items = pointer to the array of trade items
+ *       count = number of trade items
+ *       product = name of the product to find
+ * @Ret: Index of the product if found, -1 otherwise
+ *
+ ********************/
 int find_product(TradeItem *items, int count, char *product) {
     for (int i = 0; i < count; i++) {
         if (strcmp(items[i].name, product) == 0) {
@@ -28,6 +45,14 @@ int find_product(TradeItem *items, int count, char *product) {
     return -1;
 }
 
+/********************
+ *
+ * @Name: is_number
+ * @Def: Checks if a string is a valid number.
+ * @Arg: str = pointer to the string to check
+ * @Ret: 1 if valid, 0 otherwise
+ *
+ ********************/
 int is_number(char *str) {
     int i = 0;
 
@@ -45,6 +70,15 @@ int is_number(char *str) {
     return 1;
 }
 
+/********************
+ *
+ * @Name: free_trade_items
+ * @Def: Frees the memory allocated for trade items.
+ * @Arg: items = pointer to the array of trade items
+ *       count = number of trade items
+ * @Ret: None
+ *
+ ********************/
 void free_trade_items(TradeItem *items, int count) {
     for (int i = 0; i < count; i++) {
         free(items[i].name);
@@ -52,6 +86,14 @@ void free_trade_items(TradeItem *items, int count) {
     free(items);
 }
 
+/********************
+ *
+ * @Name: start_trade
+ * @Def: Initiates the trade process with a specified realm.
+ * @Arg: realm = name of the realm to trade with
+ * @Ret: None
+ *
+ ********************/
 void start_trade(char *realm) {
     char *command = NULL;
     char *output = NULL;

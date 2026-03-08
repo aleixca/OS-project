@@ -1,6 +1,13 @@
 #include "inventory.h"
 
-
+/********************
+ *
+ * @Name: load_inventory
+ * @Def: Loads the inventory from the stock.db file.
+ * @Arg: path_2 = path to the inventory file
+ * @Ret: Pointer to the loaded Product array, or NULL when it fails
+ *
+ ********************/
 Product* load_inventory(char *path_2, int *total_products) {
     int fd = open(path_2, O_RDONLY);
     int i = 0;
@@ -31,6 +38,15 @@ Product* load_inventory(char *path_2, int *total_products) {
     return products;
 }
 
+/********************
+ *
+ * @Name: list_products
+ * @Def: Lists all products in the inventory
+ * @Arg: total_products = total number of products
+ *       products = pointer to the array of products
+ * @Ret: None
+ *
+ ********************/
 void list_products(int total_products, Product *products) {
     int i = 0;
     char *output;
@@ -66,6 +82,14 @@ void list_products(int total_products, Product *products) {
 
 }
 
+/********************
+ *
+ * @Name: free_inventory
+ * @Def: Frees the memory allocated for the inventory
+ * @Arg: products = pointer to the array of products
+ * @Ret: None
+ *
+ ********************/
 void free_inventory(Product *products) {
     
     free(products);
