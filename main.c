@@ -13,7 +13,15 @@
 
 
 
-
+/********************
+ *
+ * @Name: main
+ * @Def: Entry point of the program.
+ * @Arg: argc = argument count
+ *       argv = argument vector
+ * @Ret: 0 on success, 1 on failure
+ *
+ ********************/
 int main(int argc, char *argv[]){
     int total_products = 0;
     Product *products = NULL;
