@@ -1,16 +1,5 @@
 #ifndef MAESTER_H
 #define MAESTER_H
-#define _GNU_SOURCE
-
-
-#include "io.h"
-
-
-#include <fcntl.h>   
-#include <unistd.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
 
 typedef struct  {
 	char *maester;
@@ -30,9 +19,5 @@ int stop_program;
 int total_products;
 } Maester;
 
-Maester read_Maester(char *path);
-void list_realms(Maester maester);
-void exit_maester(Maester maester);
-void free_Maester(Maester maester);
 #endif
 

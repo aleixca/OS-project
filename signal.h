@@ -2,7 +2,6 @@
 #define SIGNAL_H
 
 #include "io.h"
-#include "maester.h"
 
 #include <string.h>
 #include <unistd.h>

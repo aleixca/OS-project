@@ -4,7 +4,7 @@
 #include "commands.h"
 #include "io.h"
 #include "signal.h"
-#include "maester.h"
+#include "types.h"
 #include "inventory.h"
 #include "trade.h"
 
