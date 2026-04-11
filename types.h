@@ -12,11 +12,13 @@ char *realm_name;
 char *user_dir; 
 int envoy_count; 
 char *listen_ip; 
-int listen_port; 
+int listen_port;
+char *origin; //IP and Port
 Route *routes;
 int route_count;
 int stop_program;
 int total_products;
+int listen_fd;
 } Maester;
 
 #endif

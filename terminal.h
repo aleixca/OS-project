@@ -7,6 +7,7 @@
 #include "types.h"
 #include "inventory.h"
 #include "trade.h"
+#include "pledge_network.h"
 
 
 #include <string.h>

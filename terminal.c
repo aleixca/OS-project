@@ -28,11 +28,11 @@ void terminal(int total_products, Product *products, Maester maester) {
             printF("Command ok\n");
             break;
         case CMD_START_TRADE:
-            start_trade(realm);
+            start_trade(realm, maester);
             free(realm);
             break;
         case CMD_PLEDGE_STATUS:
-            printF("Command ok.\n");
+            show_pledge_status();
             break;
         case CMD_ENVOY_STATUS:
             printF("Command ok.\n");
@@ -44,7 +44,8 @@ void terminal(int total_products, Product *products, Maester maester) {
             printF("Command ok.\n");
             break;
         case CMD_PLEDGE:
-            printF("Command ok.\n");
+            handle_pledge(realm, maester);
+            free(realm);
             break;
         case CMD_UNKNOWN:
             printF("Unknown command.\n");

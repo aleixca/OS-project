@@ -163,6 +163,7 @@ void exit_maester(Maester maester) {
  *
  ********************/
 void free_Maester(Maester maester) {
+    close_connection(maester.listen_fd);
     free(maester.realm_name);
     free(maester.user_dir);
     free(maester.listen_ip);
@@ -171,6 +172,7 @@ void free_Maester(Maester maester) {
         free(maester.routes[i].ip);
     }
     free(maester.routes);
+    free(maester.origin);
 }
 
 /********************
@@ -196,6 +198,12 @@ int main(int argc, char *argv[]){
     
         setup_signal();
         maester = read_Maester(argv[1]);
+        asprintf(&maester.origin, "%s:%d", maester.listen_ip, maester.listen_port);
+        maester.listen_fd = setup_listener(maester.listen_port);
+        if (maester.listen_fd < 0) {
+            printF("Error: Could not start listener\n");
+            return 1;
+        }
         products = load_inventory(argv[2], &total_products);
         terminal(total_products, products, maester);
     

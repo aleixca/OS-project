@@ -13,6 +13,6 @@ typedef struct {
     int amount;
 } TradeItem;
 
-void start_trade(char *realm);
+void start_trade(char *realm, Maester maester);
 
 #endif
