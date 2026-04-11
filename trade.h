@@ -7,6 +7,8 @@
 #include <string.h>
 #include <stdio.h>
 #include "io.h"
+#include "types.h"
+#include "network.h"
 
 typedef struct {
     char *name;

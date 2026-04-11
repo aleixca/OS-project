@@ -85,8 +85,10 @@ int parse_command(char **realm) {
                 result = CMD_UNKNOWN;
             } else if (strcmp(w4, "ACCEPT") == 0) {
                 result = CMD_PLEDGE_RESPOND_ACCEPT;
+                *realm = strdup(w3);
             } else if (strcmp(w4, "REJECT") == 0) {
                 result = CMD_PLEDGE_RESPOND_REJECT;
+                *realm = strdup(w3);
             } else {
                 result = CMD_UNKNOWN;
             }
@@ -98,6 +100,7 @@ int parse_command(char **realm) {
                 result = CMD_UNKNOWN;
             } else {
                 result = CMD_PLEDGE;
+                *realm = strdup(w2);
             }
         }
     }

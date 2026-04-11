@@ -14,5 +14,7 @@
 #include <unistd.h>
 
 void terminal(int total_products, Product *products, Maester maester);
+void list_realms(Maester maester);
+void exit_maester(Maester maester);
 
 #endif

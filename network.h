@@ -42,6 +42,7 @@ int receive_frame(int sock, Frame *frame);
 unsigned short calculate_checksum(Frame *frame);
 int validate_frame(Frame *frame);
 void build_frame(Frame *frame, unsigned char type, char *origin, char *destination, char *data, unsigned short data_len);
+int accept_connection(int listen_fd);
 void close_connection(int sock);
 
 #endif

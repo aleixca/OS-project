@@ -1,5 +1,34 @@
 #include "terminal.h"
 
+/********************
+ *
+ * @Name: check_incoming
+ * @Def: Checks for an incoming connection on the listening socket
+ *       using non-blocking accept. If a frame arrives, dispatches it.
+ * @Arg: maester = the Maester instance
+ * @Ret: None
+ *
+ ********************/
+static void check_incoming(Maester maester) {
+    Frame frame;
+    int client_fd;
+ 
+    client_fd = accept_connection(maester.listen_fd);
+    if (client_fd < 0) {
+        return;
+    }
+ 
+    if (!receive_frame(client_fd, &frame)) {
+        close_connection(client_fd);
+        return;
+    }
+ 
+    if (frame.type == TYPE_ALLIANCE_REQUEST) {
+        handle_incoming_pledge(client_fd, &frame);
+    } else {
+        close_connection(client_fd);
+    }
+}
 
 /********************
  *
@@ -16,6 +45,7 @@ void terminal(int total_products, Product *products, Maester maester) {
     char *realm = NULL;
 
     while (!stop_requested() && !exit) {
+        check_incoming(maester);
 
     switch (parse_command(&realm)) {
         case CMD_LIST_REALMS:
@@ -38,10 +68,12 @@ void terminal(int total_products, Product *products, Maester maester) {
             printF("Command ok.\n");
             break;
         case CMD_PLEDGE_RESPOND_ACCEPT:
-            printF("Command ok.\n");
+            handle_pledge_respond(realm, maester, 1);
+            free(realm);
             break;
         case CMD_PLEDGE_RESPOND_REJECT:
-            printF("Command ok.\n");
+            handle_pledge_respond(realm, maester, 0);
+            free(realm);
             break;
         case CMD_PLEDGE:
             handle_pledge(realm, maester);

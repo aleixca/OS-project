@@ -200,6 +200,25 @@ int receive_frame(int sock, Frame *frame) {
 
 /********************
  *
+ * @Name: accept_connection
+ * @Def: Accepts an incoming connection on the listening socket (non-blocking)
+ * @Arg: listen_fd = the listening socket file descriptor
+ * @Ret: Connected socket fd on success, -1 if no pending connection or error
+ *
+ ********************/
+int accept_connection(int listen_fd) {
+    struct sockaddr_in client_addr;
+    socklen_t addr_len = sizeof(client_addr);
+    int client_fd;
+ 
+    client_fd = accept(listen_fd, (struct sockaddr *)&client_addr, &addr_len);
+ 
+    return client_fd;
+}
+ 
+
+/********************
+ *
  * @Name: close_connection
  * @Def: Properly closes a socket connection
  * @Arg: sock = socket file descriptor
