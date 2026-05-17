@@ -1,0 +1,11 @@
+Greyjoy
+realms/greyjoy
+2
+192.168.1.5
+8824
+--- ROUTES ---
+Dustin 192.168.1.5 8823
+Arryn 192.168.1.5 8823
+Baratheon 192.168.1.5 8823
+Cole 192.168.1.5 8823
+DEFAULT 192.168.1.5 8823

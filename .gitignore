@@ -1,0 +1,12 @@
+# Compiled binary
+maester
+
+# Object files
+*.o
+
+# AI session data
+.claude/
+
+# Editor temporaries
+*.swp
+*~

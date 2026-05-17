@@ -1,0 +1,1266 @@
+CITADEL SYSTEM - CODEBASE DOCUMENTATION
+========================================
+
+This document covers every source file in the Citadel System project.
+Each Maester process represents one realm in a distributed network. Realms
+communicate over TCP using a custom fixed-size 320-byte binary frame protocol
+(defined in Annex II). Realms can form alliances (pledges), list each other's
+products, and trade goods. Outgoing network operations are delegated to forked
+child processes called Envoys. Incoming connections are handled in detached
+pthreads.
+
+================================================================================
+=== main.c ===
+================================================================================
+
+PURPOSE: Entry point of the Maester process. Parses command-line arguments,
+installs a SIGINT handler, initialises the pledge table, loads the Maester
+configuration and product inventory, opens the server socket, hands control
+to the terminal loop, and cleans up everything on exit.
+
+  FUNCTION: main(argc, argv)
+  DOES: Validates that exactly two arguments are given (config file path and
+        inventory file path). Installs handle_sigint to catch Ctrl+C. Calls
+        init_pledges, read_Maester, load_inventory, and create_server_socket.
+        Passes all state into terminal(). After terminal() returns, calls
+        exit_maester if stopped by SIGINT, then broadcasts a shutdown notice
+        to allies, closes the server socket, and frees memory.
+  USES: signal, init_pledges, read_Maester, load_inventory, create_server_socket,
+        terminal, exit_maester, broadcast_shutdown, free_inventory, free_Maester.
+  WHY: This is the required program entry point; it wires together configuration
+       loading, networking initialisation, and the main event loop.
+
+  FUNCTION: handle_sigint(sig)
+  DOES: Sets the global stop_flag to 1 and closes STDIN_FILENO so that a
+        blocking select() call in the terminal loop returns immediately.
+  USES: stop_flag (global int), close.
+  WHY: Provides a graceful Ctrl+C shutdown path without abruptly killing the
+       process, allowing allies to be notified via broadcast_shutdown.
+
+================================================================================
+=== terminal/terminal.c ===
+================================================================================
+
+PURPOSE: Implements the main event loop for user interaction and incoming
+network connections. Uses select() to multiplex standard input (user commands),
+the server socket (incoming connections), a self-pipe (for async prompt
+reprinting), and envoy result pipes. Each accepted TCP connection is handed
+to a detached pthread so blocking transfers do not stall the prompt. Outgoing
+operations (PLEDGE, LIST PRODUCTS, START TRADE) are dispatched to forked
+Envoy child processes.
+
+  FUNCTION: notify_prompt()
+  DOES: Writes a single byte to the write end of the global self-pipe
+        g_notify_pipe, causing the select() loop to wake up and reprint the
+        command prompt after async output has been printed.
+  USES: write, g_notify_pipe.
+  WHY: Async threads (connection threads and envoy children) print output at
+       any time; this mechanism ensures the "$ " prompt is reprinted after
+       they finish so the terminal looks consistent.
+
+  FUNCTION: handle_connection_thread(arg)
+  DOES: Runs in a detached pthread for each accepted incoming connection.
+        Receives one frame with recv_frame, validates its checksum with
+        validate_frame, and either sends a NACK (if invalid) or calls
+        handle_incoming to dispatch to the appropriate protocol handler.
+        Closes the client file descriptor, frees the ConnArgs argument, and
+        decrements the active connection counter before signalling the
+        condition variable.
+  USES: recv_frame, validate_frame, parse_origin, send_nack, handle_incoming,
+        notify_prompt, g_conn_mutex, g_conn_active, g_conn_cond.
+  WHY: Allows multiple simultaneous incoming protocol exchanges (sigil
+       transfers, list deliveries, order fulfilments) without blocking the
+       select() loop or the user prompt.
+
+  FUNCTION: terminal(total_products, products, maester, server_fd, stop_flag)
+  DOES: Initialises the envoy pool, creates the self-pipe, then enters a loop
+        that calls select() with a one-second timeout on stdin, the server
+        socket, the self-pipe, and all active envoy pipes. Each iteration
+        calls check_pledge_timeouts and check_pledge_envoys. When the server
+        socket is readable it accepts the connection, sets a 30-second socket
+        timeout, allocates a ConnArgs struct, and spawns a detached pthread.
+        When an envoy pipe is readable it calls apply_envoy_result. When stdin
+        is readable it calls parse_command and dispatches to the appropriate
+        envoy dispatch function, inventory function, or pledge/realm helper.
+        On loop exit it waits for all connection threads and envoys to finish,
+        frees envoys, and closes the self-pipe.
+  USES: init_envoys, pipe, select, accept, set_socket_timeout, pthread_create,
+        pthread_detach, check_pledge_timeouts, check_pledge_envoys,
+        apply_envoy_result, parse_command, find_free_envoy, dispatch_pledge,
+        dispatch_list_products, dispatch_trade, dispatch_pledge_respond,
+        collect_trade_items, reserve_envoy, release_envoy, list_realms,
+        list_products, show_pledge_status, show_envoy_status, exit_maester,
+        wait_all_envoys, free_envoys, ri_free_all, g_data_mutex.
+  WHY: This is the central control loop of the Maester process; it coordinates
+       all user commands, incoming network events, and async worker results in
+       a single non-blocking event-driven design.
+
+================================================================================
+=== terminal/terminal.h ===
+================================================================================
+
+PURPOSE: Exports the terminal() function signature and pulls in all headers
+that terminal.c and its callers need: commands.h, io.h, maester.h, inventory.h,
+pledge.h, protocol.h, network.h, message_handler.h, and envoy.h.
+
+KEY TYPES:
+  (no new types defined; acts as an umbrella include)
+
+================================================================================
+=== terminal/commands.c ===
+================================================================================
+
+PURPOSE: Parses a single line of user input from stdin into a structured
+command constant. Handles tokenisation, case-insensitive keyword matching,
+and extraction of realm names and sigil file paths while preserving their
+original case.
+
+  FUNCTION: parse_command(realm, sigil)
+  DOES: Reads one line with read_screen, duplicates it to preserve original
+        case, upper-cases the working copy, and tokenises it with strtok.
+        Matches the first token against the known keywords (EXIT, LIST, PLEDGE,
+        START, ENVOY) and inspects subsequent tokens to determine the full
+        command. For commands that carry a realm name or sigil path it copies
+        the corresponding token from the original-case duplicate into *realm
+        or *sigil. Returns the appropriate CMD_* constant; returns CMD_EXIT
+        on EOF (NULL from read_screen).
+  USES: read_screen, strdup, to_upper, strtok, strcmp, CMD_* constants.
+  WHY: Centralises all command parsing so that terminal.c can operate on a
+       clean integer enum rather than raw string comparisons.
+
+================================================================================
+=== terminal/commands.h ===
+================================================================================
+
+PURPOSE: Defines integer constants for every possible command result returned
+by parse_command, and declares that function.
+
+KEY TYPES:
+  CMD_UNKNOWN (0)             - unrecognised input
+  CMD_LIST_REALMS (1)         - "LIST REALMS"
+  CMD_PLEDGE (2)              - "PLEDGE <realm> <sigil>"
+  CMD_PLEDGE_RESPOND_ACCEPT (3) - "PLEDGE RESPOND <realm> ACCEPT"
+  CMD_PLEDGE_RESPOND_REJECT (4) - "PLEDGE RESPOND <realm> REJECT"
+  CMD_LIST_PRODUCTS_OWN (5)   - "LIST PRODUCTS" (own inventory)
+  CMD_LIST_PRODUCTS_REALM (6) - "LIST PRODUCTS <realm>"
+  CMD_START_TRADE (7)         - "START TRADE <realm>"
+  CMD_PLEDGE_STATUS (8)       - "PLEDGE STATUS"
+  CMD_ENVOY_STATUS (9)        - "ENVOY STATUS"
+  CMD_EXIT (10)               - "EXIT"
+  CMD_INCOMPLETE_* (11-16)    - various incomplete command forms
+
+================================================================================
+=== utils/io.c ===
+================================================================================
+
+PURPOSE: Provides low-level I/O utility functions used throughout the project
+for reading from file descriptors and manipulating strings.
+
+  FUNCTION: to_upper(s)
+  DOES: Iterates over every character in the string and replaces it with its
+        uppercase equivalent using toupper.
+  USES: toupper.
+  WHY: Enables case-insensitive command parsing without changing the calling
+       code; used in parse_command and collect_trade_items.
+
+  FUNCTION: remove_slashr(s)
+  DOES: Scans a string for a carriage return character ('\r') and replaces it
+        with a null terminator, stripping Windows-style line endings.
+  USES: (character comparison only)
+  WHY: Config files may have Windows line endings (\r\n); this ensures that
+       fields read from them are clean C strings.
+
+  FUNCTION: readUntil(fd, separator)
+  DOES: Reads one character at a time from fd into a dynamically grown buffer
+        until the separator character is encountered or EOF/error occurs.
+        Returns a malloc'd null-terminated string. Returns NULL on error or
+        if no characters were read before EOF.
+  USES: malloc, realloc, read.
+  WHY: Used by read_Maester to parse config file fields that are delimited by
+       spaces and newlines, allowing arbitrarily long field values.
+
+  FUNCTION: read_screen()
+  DOES: Reads characters from file descriptor 0 (stdin) one at a time into a
+        dynamically grown buffer until a newline is encountered. Returns a
+        malloc'd null-terminated string. Returns NULL on read error or EOF.
+  USES: malloc, realloc, read.
+  WHY: Provides the interactive command input mechanism for parse_command and
+       the trade sub-menu in collect_trade_items.
+
+================================================================================
+=== utils/io.h ===
+================================================================================
+
+PURPOSE: Exports the I/O utility functions and defines the printF macro for
+writing strings to stdout using the write system call (avoiding printf's
+buffering).
+
+KEY TYPES:
+  printF(x)     - macro: write(STDOUT_FILENO, x, strlen(x))
+  to_upper      - function declaration
+  remove_slashr - function declaration
+  readUntil     - function declaration
+  read_screen   - function declaration
+
+================================================================================
+=== realm/maester.c ===
+================================================================================
+
+PURPOSE: Manages Maester configuration: reading the config file, listing
+known realms, printing startup/shutdown messages, freeing memory, and checking
+whether a realm name appears in the routing table.
+
+  FUNCTION: strip_amp(s)  [static]
+  DOES: Removes all '&' characters from a string in-place by copying non-'&'
+        characters to a write pointer.
+  USES: (pointer arithmetic only)
+  WHY: The DATA field separator in the wire protocol is '&'; realm names read
+       from config files must not contain this character.
+
+  FUNCTION: read_Maester(path)
+  DOES: Opens the config file at path and reads its fields line by line using
+        readUntil: realm_name, user_dir, envoy_count, listen_ip, listen_port,
+        a separator line, and then an arbitrary number of route entries (each
+        "name ip port"). Allocates and fills a Maester struct. Strips '&' from
+        realm and route names. Prints an initialisation message on success.
+  USES: open, readUntil, remove_slashr, strdup, atoi, realloc, close,
+        strip_amp, asprintf, printF.
+  WHY: Provides the runtime configuration (identity, address, routing table)
+       that every other subsystem needs to operate.
+
+  FUNCTION: list_realms(maester)
+  DOES: Iterates the route table and prints each known realm name prefixed
+        with " - " to stdout.
+  USES: asprintf, printF, free.
+  WHY: Implements the LIST REALMS user command by showing which realms this
+       Maester knows how to reach.
+
+  FUNCTION: exit_maester(maester)
+  DOES: Prints a signing-off message that includes the realm name.
+  USES: asprintf, printF, free.
+  WHY: Provides the user-visible goodbye message on clean EXIT or Ctrl+C.
+
+  FUNCTION: free_Maester(maester)
+  DOES: Frees every heap-allocated string field in the Maester struct (realm_name,
+        user_dir, listen_ip, stock_path) and each route's maester and ip
+        strings, then frees the routes array itself.
+  USES: free.
+  WHY: Prevents memory leaks when the process exits.
+
+  FUNCTION: realm_exists(realm, maester)
+  DOES: Performs a case-insensitive linear search of the routing table,
+        skipping any entry named "DEFAULT", and returns 1 if realm is found.
+  USES: strcasecmp.
+  WHY: Used to validate that a PLEDGE target is a named realm in the config,
+       preventing pledges to entirely unknown names before even attempting
+       a network connection.
+
+================================================================================
+=== realm/maester.h ===
+================================================================================
+
+PURPOSE: Defines the Route and Maester structs and declares all functions
+exported by maester.c.
+
+KEY TYPES:
+  Route      - struct with char *maester (realm name), char *ip, int port.
+               Represents one entry in the routing table.
+  Maester    - struct containing realm_name, user_dir, envoy_count, listen_ip,
+               listen_port, Route *routes, route_count, stop_program,
+               total_products, and char *stock_path. Holds the complete
+               runtime identity and configuration of this node.
+
+================================================================================
+=== network/network.c ===
+================================================================================
+
+PURPOSE: Provides the TCP socket layer: creating and binding the server
+listening socket, opening outgoing connections to other realms, sending and
+receiving fixed-size protocol frames, sending NACK responses, looking up
+the next-hop route for a destination, and broadcasting a shutdown notice to
+all allied realms on exit.
+
+  FUNCTION: create_server_socket(ip, port)
+  DOES: Creates a TCP socket, sets SO_REUSEADDR, binds to the given IP and
+        port, and calls listen with SOMAXCONN. Returns the file descriptor on
+        success, -1 on any failure.
+  USES: socket, setsockopt, inet_pton, bind, listen, close.
+  WHY: Opens the port on which this Maester accepts incoming connections from
+       other realms and Envoy children.
+
+  FUNCTION: connect_to_realm(ip, port)
+  DOES: Creates a TCP socket, connects it to ip:port, sets a 30-second send
+        and receive timeout, and returns the connected file descriptor, or -1
+        on failure.
+  USES: socket, inet_pton, connect, set_socket_timeout, close.
+  WHY: Used by every outgoing operation (send_pledge, send_pledge_response,
+       request_list_products, send_trade_request, relay_pledge_hop) to open
+       a connection to the target realm.
+
+  FUNCTION: set_socket_timeout(fd, timeout_sec)
+  DOES: Sets SO_RCVTIMEO and SO_SNDTIMEO on the given socket to timeout_sec
+        seconds using setsockopt.
+  USES: setsockopt.
+  WHY: Prevents the process from blocking forever if a remote peer stalls or
+       crashes mid-transfer.
+
+  FUNCTION: lookup_route(realm, maester, ip_out, port_out)
+  DOES: Resolves the IP and port for destination realm in three priority steps:
+        (1) if the realm is allied, retrieves its direct IP/port from the
+        pledge table; (2) searches the routing table for a named entry with a
+        real address; (3) falls back to the DEFAULT entry. Returns 0 on
+        success, -1 if no route exists at all.
+  USES: get_pledge_status, get_pledge_ip_port, strcasecmp, strncpy.
+  WHY: Provides the routing decision for both direct and multi-hop delivery of
+       frames through the network, supporting the Citadel's hop-based topology.
+
+  FUNCTION: send_frame(fd, frame)
+  DOES: Writes exactly sizeof(Frame) bytes to fd in a loop, retrying partial
+        writes until all bytes are sent. Returns the total bytes written, or
+        -1 on error.
+  USES: write.
+  WHY: Guarantees that the full 320-byte frame is transmitted atomically
+       regardless of kernel buffer sizes.
+
+  FUNCTION: recv_frame(fd, frame)
+  DOES: Reads exactly sizeof(Frame) bytes from fd in a loop, retrying partial
+        reads until all bytes are received. Returns 0 on success, -1 on EOF
+        or error.
+  USES: read.
+  WHY: Guarantees reception of a complete 320-byte frame before the caller
+       inspects any field.
+
+  FUNCTION: send_nack(dest_ip, dest_port, maester)
+  DOES: Builds a MSG_NACK (0x69) frame with the local realm name in the DATA
+        field, connects to dest_ip:dest_port, sends the frame, and closes the
+        connection.
+  USES: format_origin, build_frame, connect_to_realm, send_frame, close.
+  WHY: Satisfies the protocol requirement that any node detecting a corrupted
+       frame must notify the sender with a NACK.
+
+  FUNCTION: broadcast_shutdown(maester)
+  DOES: Iterates every pledge entry; for each realm with PLEDGE_ALLIED status,
+        builds a MSG_DISCONNECT (0x27) frame with DATA "DISCONNECT", connects
+        to that realm, sends the frame, and closes the connection.
+  USES: get_pledge_count, get_pledge_realm, get_pledge_status,
+        get_pledge_ip_port, build_frame, connect_to_realm, send_frame,
+        format_origin, asprintf, printF.
+  WHY: Implements the graceful shutdown requirement: allies are notified so
+       they can mark this realm as INACTIVE before the process terminates.
+
+================================================================================
+=== network/network.h ===
+================================================================================
+
+PURPOSE: Declares all functions provided by network.c and includes protocol.h,
+maester.h, and pledge.h to bring the Frame type and routing types into scope.
+
+KEY TYPES:
+  (no new types; function declarations only)
+
+================================================================================
+=== network/protocol.c ===
+================================================================================
+
+PURPOSE: Implements the fixed-size binary frame protocol defined in Annex II:
+computing and verifying checksums, building frames, and formatting/parsing
+the ORIGIN field.
+
+  FUNCTION: compute_checksum(f)
+  DOES: Sums every byte of the 320-byte frame except the two checksum bytes,
+        takes the result modulo 65536, and returns it as an unsigned short.
+  USES: (byte arithmetic on the raw struct bytes)
+  WHY: Provides the integrity check value embedded in every frame so receivers
+       can detect corruption in transit.
+
+  FUNCTION: validate_frame(f)
+  DOES: Recomputes the checksum of f and compares it against the stored
+        f->checksum field. Returns 1 if they match, 0 otherwise.
+  USES: compute_checksum.
+  WHY: Lets any node verify a received frame before processing it, enabling
+       the NACK mechanism.
+
+  FUNCTION: build_frame(f, type, origin_str, dest_realm, data, data_len)
+  DOES: Zeroes the entire frame, sets the type byte, copies origin_str into
+        the ORIGIN field, copies dest_realm into the DESTINATION field, sets
+        data_length, copies data bytes into the DATA field, and finally
+        computes and stores the checksum.
+  USES: memset, strncpy, memcpy, compute_checksum.
+  WHY: Single point of frame construction ensures every frame is correctly
+       initialised and checksummed before transmission.
+
+  FUNCTION: format_origin(buf, ip, port)
+  DOES: Formats the string "IP:Port" into buf (at most ORIGIN_SIZE bytes)
+        using snprintf, then null-terminates at the last position.
+  USES: snprintf.
+  WHY: Provides a consistent way to build the ORIGIN field that every
+       send_* function needs.
+
+  FUNCTION: parse_origin(origin, ip_out, port_out)
+  DOES: Finds the ':' separator in the origin string, copies the IP part into
+        ip_out, and parses the port number into *port_out. Returns 0 on
+        success, -1 if no colon is found or if the IP is too long.
+  USES: strchr, strncpy, atoi.
+  WHY: Used when a received frame's ORIGIN field must be decoded to establish
+       a return connection (e.g., in handle_alliance_resp and handle_disconnect).
+
+================================================================================
+=== network/protocol.h ===
+================================================================================
+
+PURPOSE: Defines the packed Frame struct layout, all MSG_* message type
+constants, and dimension constants for the frame fields. Declares all
+protocol helper functions.
+
+KEY TYPES:
+  Frame (packed struct, exactly 320 bytes):
+    type         - 1 byte, message type (MSG_* constant)
+    origin[20]   - "IP:Port" of sending realm
+    destination[20] - realm name of target
+    data_length  - 2-byte short, number of valid bytes in data[]
+    data[275]    - payload bytes
+    checksum     - 2-byte short, sum of all other bytes % 65536
+
+  MSG_ALLIANCE_HEADER (0x01)  - alliance request header
+  MSG_SIGIL_DATA      (0x02)  - sigil file data chunk
+  MSG_ALLIANCE_RESP   (0x03)  - ACCEPT or REJECT response
+  MSG_LIST_REQUEST    (0x11)  - product list request
+  MSG_LIST_HEADER     (0x12)  - product list header
+  MSG_LIST_DATA       (0x13)  - product list file data
+  MSG_ORDER_HEADER    (0x14)  - trade order header
+  MSG_ORDER_DATA      (0x15)  - trade order file data
+  MSG_ORDER_RESP      (0x16)  - OK or REJECT response
+  MSG_UNKNOWN_REALM   (0x21)  - no route to destination
+  MSG_UNAUTHORIZED    (0x25)  - sender not allied
+  MSG_DISCONNECT      (0x27)  - shutting down notification
+  MSG_ACK_FILE        (0x31)  - receiver ready to receive file
+  MSG_ACK_MD5         (0x32)  - MD5 verification result
+  MSG_NACK            (0x69)  - checksum error detected
+
+  FRAME_TOTAL_SIZE = 320, ORIGIN_SIZE = 20, DEST_SIZE = 20, DATA_SIZE = 275
+  DATA_SEP = '&' (field separator inside DATA)
+
+================================================================================
+=== transfer/sigil.c ===
+================================================================================
+
+PURPOSE: Provides file-level operations needed by the pledge and trade
+protocols: computing MD5 checksums of local files using fork+exec, measuring
+file sizes, sending a file as a stream of protocol frames, receiving a stream
+of frames back into a file, and relaying frames between two open connections
+without touching disk.
+
+  FUNCTION: compute_file_md5(filepath)
+  DOES: Creates a pipe, forks a child that redirects its stdout to the pipe
+        write end and execs "md5sum filepath", then reads exactly 32 bytes
+        from the pipe read end in the parent. Waits for the child with
+        waitpid. Returns a malloc'd 33-byte null-terminated hex string, or
+        NULL on any error.
+  USES: pipe, fork, dup2, execvp, waitpid, read, malloc.
+  WHY: File integrity is verified by MD5 after every sigil and stock file
+       transfer; fork+exec is required by the session constraints.
+
+  FUNCTION: get_file_size(filepath)
+  DOES: Opens filepath read-only, seeks to the end with lseek(SEEK_END), and
+        returns the result as an int. Closes the file.
+  USES: open, lseek, close.
+  WHY: The file size must be included in the protocol header frame so the
+       receiver knows how many data bytes to expect.
+
+  FUNCTION: send_file_in_frames(fd, filepath, type, origin_str, dest_realm)
+  DOES: Opens filepath, reads it in DATA_SIZE-byte chunks, and for each chunk
+        builds a protocol frame of the specified type using build_frame and
+        sends it with send_frame. Loops until EOF.
+  USES: open, read, build_frame, send_frame, close.
+  WHY: Implements the Annex II file-streaming mechanism for sigil files (0x02),
+       stock list files (0x13), and trade order files (0x15).
+
+  FUNCTION: recv_file_in_frames(fd, save_path, expected_size, expected_type)
+  DOES: Opens save_path for writing, then loops receiving frames with
+        recv_frame and validating each with validate_frame. Writes each
+        frame's DATA bytes to the file until expected_size bytes have been
+        received. Returns RECV_FRAMES_OK, RECV_FRAMES_CKSUM (on checksum
+        failure), or RECV_FRAMES_ERR.
+  USES: open, recv_frame, validate_frame, write, close.
+  WHY: The counterpart to send_file_in_frames; used wherever a file must be
+       received and saved locally (sigil files, stock database, order files).
+
+  FUNCTION: relay_file_frames(src_fd, dst_fd, expected_size, expected_type)
+  DOES: Reads successive frames of expected_type from src_fd, validates each
+        checksum, and writes each frame unchanged to dst_fd until
+        expected_size payload bytes have been relayed.
+  USES: recv_frame, validate_frame, send_frame.
+  WHY: Intermediate nodes in the multi-hop network must forward file data
+       without decoding or storing it; this function is used by relay_pledge_hop.
+
+================================================================================
+=== transfer/sigil.h ===
+================================================================================
+
+PURPOSE: Declares all functions in sigil.c and defines the return codes for
+the frame-receive functions.
+
+KEY TYPES:
+  RECV_FRAMES_OK    (0)  - transfer completed successfully
+  RECV_FRAMES_ERR  (-1)  - I/O error, wrong frame type, or short read
+  RECV_FRAMES_CKSUM(-2)  - invalid checksum; caller should send NACK
+
+================================================================================
+=== transfer/relay.c ===
+================================================================================
+
+PURPOSE: Implements the intermediate-hop relay logic for PLEDGE (0x01)
+exchanges. When a node receives a PLEDGE header but is not the final
+destination, it must forward the complete sigil exchange to the next hop
+without writing the sigil to disk and without altering ORIGIN or DESTINATION
+fields.
+
+  FUNCTION: relay_pledge_hop(hdr, client_fd, maester)
+  DOES: Parses the sender realm name and file size from the DATA field of the
+        already-received 0x01 header. Looks up the next hop with lookup_route;
+        if not found, sends a MSG_UNKNOWN_REALM frame back to client_fd.
+        Otherwise connects to the next hop (fd2), forwards the 0x01 header,
+        relays the 0x31 ACK FILE from fd2 back to client_fd (sending a NACK
+        if the checksum is bad), relays all 0x02 sigil data frames from
+        client_fd to fd2 using relay_file_frames (sending a NACK on checksum
+        error), and finally relays the 0x32 ACK MD5 from fd2 back to client_fd.
+  USES: parse_data_fields (via strtok), lookup_route, connect_to_realm,
+        send_frame, recv_frame, validate_frame, relay_file_frames,
+        format_origin, build_frame, printF, asprintf.
+  WHY: Supports multi-hop pledge delivery in the network topology. Nodes that
+       are not the pledge destination must be transparent forwarders per the
+       protocol specification.
+
+================================================================================
+=== transfer/relay.h ===
+================================================================================
+
+PURPOSE: Declares relay_pledge_hop and includes the protocol and maester
+headers needed to compile relay.c independently.
+
+KEY TYPES:
+  (no new types; function declaration only)
+
+================================================================================
+=== handlers/message_handler.c ===
+================================================================================
+
+PURPOSE: Acts as the inbound frame dispatcher and houses several small helper
+functions used by all handler modules. handle_incoming is the single entry
+point called from the connection thread; it switches on the frame type and
+calls the appropriate specialist handler. Also contains handle_disconnect,
+which processes MSG_DISCONNECT (0x27) frames.
+
+  FUNCTION: parse_data_fields(data_copy, data_len, f0, f1, f2, f3)
+  DOES: Null-terminates data_copy at data_len, then calls strtok with '&' to
+        extract up to four field pointers into f0..f3. Stops early if a
+        token is NULL.
+  USES: strtok.
+  WHY: All DATA fields in the protocol use '&' as a separator; this helper
+       avoids repeated strtok boilerplate in every handler.
+
+  FUNCTION: send_ack_file(fd, origin_str, dest_realm, result_str, our_realm)
+  DOES: Builds a MSG_ACK_FILE (0x31) frame with DATA "result_str&our_realm"
+        (ORIGIN and DESTINATION fields are left empty per Annex II) and sends
+        it on fd.
+  USES: build_frame, send_frame, snprintf.
+  WHY: Used by several handlers to signal readiness (OK) or refusal (KO) to
+       receive a file.
+
+  FUNCTION: send_ack_md5(fd, origin_str, dest_realm, result_str, our_realm)
+  DOES: Same structure as send_ack_file but uses MSG_ACK_MD5 (0x32). Sends
+        "CHECK_OK&realm" or "CHECK_KO&realm" in the DATA field.
+  USES: build_frame, send_frame, snprintf.
+  WHY: Closes the file-transfer handshake by reporting whether the received
+       file's MD5 matches the expected value.
+
+  FUNCTION: find_realm_by_origin(origin_field)
+  DOES: Parses origin_field into an IP:port pair, then iterates the pledge
+        table looking for a realm whose stored IP and port match. Returns the
+        realm name string if found, NULL otherwise.
+  USES: parse_origin, get_pledge_count, get_pledge_realm, get_pledge_ip_port,
+        strncmp.
+  WHY: Provides authenticated sender identification for incoming LIST and
+       ORDER requests; the DATA field alone is not trusted (it could be forged).
+
+  FUNCTION: ensure_dir(path)
+  DOES: Calls mkdir on path; if mkdir fails with EEXIST the directory already
+        exists and the function returns 0 as success. Returns -1 on real failure.
+  USES: mkdir, errno.
+  WHY: Lazily creates the user_dir (house directory) before writing sigil or
+       order files.
+
+  FUNCTION: recv_validated(fd, f, m)
+  DOES: Calls recv_frame; if successful, calls validate_frame. On checksum
+        failure builds and sends an inline NACK on fd. Returns 0 on success,
+        -1 on any error.
+  USES: recv_frame, validate_frame, format_origin, build_frame, send_frame.
+  WHY: Combines receive and validation into one call to reduce boilerplate and
+       ensure NACK is always sent on checksum failures.
+
+  FUNCTION: send_nack_on_fd(fd, m)
+  DOES: Builds a MSG_NACK frame and sends it on an already-open file descriptor.
+  USES: format_origin, build_frame, send_frame.
+  WHY: Provides a convenient inline NACK sender for cases where the connection
+       is already open.
+
+  FUNCTION: handle_incoming(frame, client_fd, maester, products, total_products)
+  DOES: Switches on frame->type. MSG_ALLIANCE_HEADER (0x01): checks if we are
+        the destination and calls handle_alliance_dest, else calls
+        relay_pledge_hop. MSG_ALLIANCE_RESP (0x03): calls handle_alliance_resp.
+        MSG_LIST_REQUEST (0x11): calls handle_list_request. MSG_ORDER_HEADER
+        (0x14): calls handle_order_header. MSG_DISCONNECT (0x27): calls
+        handle_disconnect. MSG_UNKNOWN_REALM (0x21): parses the destination
+        name and prints a log message. MSG_NACK (0x69): prints a warning.
+        Default: sends a NACK back.
+  USES: strcasecmp, handle_alliance_dest, relay_pledge_hop,
+        handle_alliance_resp, handle_list_request, handle_order_header,
+        handle_disconnect, send_nack_on_fd, printF.
+  WHY: Single dispatch point ensures every incoming frame type is handled
+       consistently and unknown types are rejected with NACK.
+
+  FUNCTION: handle_disconnect(frame)
+  DOES: Parses the ORIGIN field of the 0x27 frame to get the disconnecting
+        realm's IP and port, searches the pledge table for a matching entry,
+        calls update_pledge_status to set it INACTIVE, and prints a log message.
+  USES: parse_origin, get_pledge_count, get_pledge_realm, get_pledge_ip_port,
+        strncmp, update_pledge_status, printF.
+  WHY: Maintains an accurate alliance table; marking a realm INACTIVE prevents
+       further trade or list requests to a realm that has shut down.
+
+================================================================================
+=== handlers/message_handler.h ===
+================================================================================
+
+PURPOSE: Declares the public interface of the handler subsystem: handle_incoming
+(the inbound dispatcher) and the four outgoing operation functions (send_pledge,
+send_pledge_response, request_list_products, send_trade_request).
+
+KEY TYPES:
+  (no new types; function declarations only)
+
+================================================================================
+=== handlers/handler_helpers.h ===
+================================================================================
+
+PURPOSE: Internal header that bridges message_handler.c and the handler
+implementation files (pledge_handler.c, list_handler.c, order_handler.c).
+Declares all the shared helper functions defined in message_handler.c and all
+the per-file handler function prototypes.
+
+KEY TYPES:
+  (no new types; helper and handler function declarations only)
+
+================================================================================
+=== handlers/pledge_handler.c ===
+================================================================================
+
+PURPOSE: Implements the pledge protocol at both endpoints: handling an incoming
+alliance request as the destination realm, handling an incoming alliance
+response as the originating realm, sending an outgoing alliance request, and
+sending an outgoing alliance response.
+
+  FUNCTION: handle_alliance_dest(frame, client_fd, maester)
+  DOES: Parses the DATA field of the 0x01 frame to extract sender realm name,
+        sigil filename, file size, and expected MD5. Parses the ORIGIN field
+        for the sender's IP and port. Sends a 0x31 OK. If file size > 0,
+        ensures the user_dir exists, constructs a save path, and calls
+        recv_file_in_frames to receive the sigil file; on checksum error sends
+        NACK and CHECK_KO. Verifies the MD5 with compute_file_md5; on mismatch
+        sends CHECK_KO and deletes the file. On success sends CHECK_OK, calls
+        add_incoming_pledge, and prints a log message.
+  USES: parse_data_fields, parse_origin, send_ack_file, ensure_dir,
+        recv_file_in_frames, compute_file_md5, send_nack_on_fd, send_ack_md5,
+        add_incoming_pledge, strrchr, printF, asprintf.
+  WHY: Executes the receiver side of the alliance protocol, accepting the
+       sigil file and recording the pending incoming pledge for user review.
+
+  FUNCTION: handle_alliance_resp(frame, client_fd, maester)
+  DOES: Parses the 0x03 DATA to extract "ACCEPT"/"REJECT" and the responding
+        realm's name. Parses the ORIGIN for the responder's IP/port. Checks
+        that the pledge is still OUTGOING_PENDING (ignores late responses with
+        a NACK). On ACCEPT: calls update_pledge_status(ALLIED),
+        update_pledge_ip_port, sends 0x31 OK. On REJECT: calls
+        update_pledge_status(FAILED), sends 0x31 KO. Prints the result.
+  USES: parse_data_fields, parse_origin, get_pledge_status,
+        update_pledge_status, update_pledge_ip_port, send_ack_file,
+        send_nack_on_fd, printF, asprintf.
+  WHY: Finalises the alliance state when the response arrives back at the
+       originating realm.
+
+  FUNCTION: send_pledge(realm, sigil, maester)
+  DOES: Validates that we are not already allied with realm. Checks that the
+        sigil path is inside our user_dir. Verifies the sigil file is
+        readable. Computes file size and MD5. Builds a 0x01 frame with DATA
+        "OurName&SigilFilename&Size&MD5". Calls lookup_route and
+        connect_to_realm. Sends the 0x01 frame; waits for 0x31 ACK (handles
+        0x21 UNKNOWN_REALM). Sends the sigil in 0x02 frames. Waits for 0x32
+        ACK MD5. Returns 0 on success, -1 on any failure.
+  USES: get_pledge_status, get_file_size, compute_file_md5, format_origin,
+        build_frame, lookup_route, connect_to_realm, send_frame,
+        recv_validated, send_file_in_frames, printF, asprintf.
+  WHY: Implements the originator side of the alliance protocol, initiating
+       the multi-step handshake and file transfer.
+
+  FUNCTION: send_pledge_response(realm, response, maester)
+  DOES: Verifies an INCOMING_PENDING pledge exists for realm. Retrieves the
+        origin address. Builds a 0x03 frame with DATA "response&OurRealm".
+        Connects directly to the originator, sends the 0x03 frame, and waits
+        for a 0x31 ACK. Returns PLEDGE_ALLIED if ACCEPT was confirmed with an
+        OK ACK, PLEDGE_FAILED otherwise.
+  USES: get_pledge_status, get_pledge_ip_port, format_origin, build_frame,
+        connect_to_realm, send_frame, recv_validated, printF, asprintf.
+  WHY: Allows the responding realm to send its ACCEPT or REJECT decision to
+       the originator.
+
+================================================================================
+=== handlers/list_handler.c ===
+================================================================================
+
+PURPOSE: Implements both sides of the LIST PRODUCTS protocol: serving an
+allied realm's product list request (handle_list_request) and initiating a
+request for another realm's product list (request_list_products).
+
+  FUNCTION: handle_list_request(frame, client_fd, maester, products,
+                                  total_products)
+  DOES: Extracts the requester's realm name from DATA. Cross-checks the ORIGIN
+        IP against the pledge table to prevent forged DATA fields from bypassing
+        authentication; sends MSG_UNAUTHORIZED if not allied or origin mismatch.
+        Computes MD5 and file size of the local stock file. Sends a 0x12 header
+        with "filename&size&MD5". Waits for 0x31 ACK. Sends the stock file in
+        0x13 frames. Waits for 0x32 ACK MD5. Prints a log message.
+  USES: find_realm_by_origin, get_pledge_status, get_file_size,
+        compute_file_md5, format_origin, build_frame, send_frame, recv_validated,
+        send_file_in_frames, printF, asprintf.
+  WHY: Satisfies the LIST PRODUCTS server side: only allied realms can retrieve
+       the stock database, and the transfer is integrity-checked.
+
+  FUNCTION: request_list_products(realm, maester, products, total_products,
+                                    cache, cache_count)
+  DOES: Verifies the realm is allied and retrieves its address. Builds and
+        sends a 0x11 request with our realm name in DATA. Receives the 0x12
+        header and parses filename, size, MD5. Creates a local temp file path.
+        Sends 0x31 OK. Receives the stock file in 0x13 frames; sends NACK and
+        CHECK_KO on checksum error. Verifies MD5; sends CHECK_OK. Parses the
+        binary file into an array of Product structs and prints them. Updates
+        the remote inventory cache under g_data_mutex. Deletes the temp file.
+  USES: get_pledge_status, get_pledge_ip_port, format_origin, build_frame,
+        connect_to_realm, send_frame, recv_validated, parse_data_fields,
+        ensure_dir, send_ack_file, recv_file_in_frames, send_nack_on_fd,
+        compute_file_md5, send_ack_md5, ri_set_products, g_data_mutex,
+        printF, asprintf.
+  WHY: Satisfies the LIST PRODUCTS client side: fetches an ally's current
+       stock database so the user can review it and subsequently start a trade.
+
+================================================================================
+=== handlers/order_handler.c ===
+================================================================================
+
+PURPOSE: Implements both sides of the trade order protocol: processing an
+incoming trade order from an allied buyer (handle_order_header) and sending
+a trade order to an allied realm (send_trade_request).
+
+  FUNCTION: aggregate_order_line(line, agg, agg_count)  [static]
+  DOES: Parses a "name&quantity" text line from the order file. Validates that
+        the quantity is a positive integer using strtol. Adds the quantity to
+        an existing entry in the aggregation array (case-insensitive name
+        match) or creates a new entry. Returns a static rejection string on
+        error, NULL on success.
+  USES: strchr, strtol, strcasecmp, strncpy.
+  WHY: Allows the same product to appear on multiple order lines; their
+       quantities are summed before the stock check so the validation is
+       atomic.
+
+  FUNCTION: handle_order_header(frame, client_fd, maester, pp_products, p_total)
+  DOES: Identifies the sender realm by matching ORIGIN against the pledge table;
+        rejects with MSG_UNAUTHORIZED if not allied. Parses DATA for filename,
+        file size, and MD5. Sends 0x31 OK. Receives the order file in 0x15
+        frames. Verifies MD5; sends 0x32 CHECK_OK or CHECK_KO. Parses the
+        order file line by line into an aggregated OrderLine array. Acquires
+        g_data_mutex, re-reads the current products pointer, validates every
+        item for existence and stock availability, and either rejects with a
+        0x16 REJECT frame or applies the stock delta and persists the stock
+        file, then sends a 0x16 OK frame.
+  USES: find_realm_by_origin, get_pledge_status, format_origin, build_frame,
+        send_frame, recv_file_in_frames, send_nack_on_fd, compute_file_md5,
+        send_ack_file, send_ack_md5, aggregate_order_line, apply_stock_delta,
+        write_stock_file, g_data_mutex, pthread_self, printF, asprintf.
+  WHY: Implements the server side of the trade protocol, enforcing both
+       authentication and stock consistency under a mutex to prevent race
+       conditions when multiple envoys are trading simultaneously.
+
+  FUNCTION: send_trade_request(realm, maester, products, total_products, items,
+                                 item_count, cache, cache_count, envoy_idx)
+  DOES: Verifies realm is allied and gets its address. Writes the trade order
+        to a temp file (one "PRODUCT&AMOUNT\n" line per item). Computes file
+        size and MD5. Builds and sends a 0x14 frame. Waits for 0x31 OK. Sends
+        the order file in 0x15 frames. Deletes the temp file. Waits for 0x32
+        ACK MD5. Waits for 0x16 response. On OK: acquires g_data_mutex, looks
+        up ally product weights from cache, calls add_or_update_product for
+        each traded item, persists the stock file, releases the lock, and
+        prints a success message. On REJECT: prints the reason.
+  USES: get_pledge_status, get_pledge_ip_port, format_origin, ensure_dir,
+        get_file_size, compute_file_md5, build_frame, connect_to_realm,
+        send_frame, recv_validated, send_file_in_frames, ri_get_products,
+        add_or_update_product, write_stock_file, g_data_mutex, printF, asprintf.
+  WHY: Implements the client side of the trade protocol, sending a complete
+       order file and updating the local inventory when the seller accepts.
+
+================================================================================
+=== pledge/pledge.c ===
+================================================================================
+
+PURPOSE: Manages the in-memory pledge table: a fixed-size array of Pledge
+entries representing all alliance relationships this Maester has initiated or
+received. Provides thread-safe access through a recursive mutex. Handles
+timeout detection for outgoing pending pledges.
+
+  FUNCTION: find_pledge(realm)  [static, called with lock held]
+  DOES: Performs a case-insensitive linear search of the pledges array and
+        returns the index of the entry matching realm, or -1 if not found.
+  USES: strcasecmp.
+  WHY: Internal lookup used by all public pledge functions to avoid code
+       duplication.
+
+  FUNCTION: init_pledges()
+  DOES: Initialises the pledge mutex as PTHREAD_MUTEX_RECURSIVE (so a caller
+        can hold the lock across multiple pledge operations atomically), zeros
+        pledge_count, and clears all pledge entries.
+  USES: pthread_mutexattr_init, pthread_mutexattr_settype,
+        pthread_mutex_init, pthread_mutexattr_destroy.
+  WHY: Must be called once at startup before any network or envoy operations
+       that might modify the pledge table from multiple threads.
+
+  FUNCTION: add_outgoing_pledge(realm)
+  DOES: Acquires g_pledge_mutex, finds or creates an entry for realm, sets its
+        status to PLEDGE_OUTGOING_PENDING, records the current timestamp in
+        sent_time, and clears the IP/port (not yet known).
+  USES: pthread_mutex_lock, pthread_mutex_unlock, find_pledge, time, strncpy.
+  WHY: Called by apply_envoy_result after a successful sigil transfer to begin
+       the timeout clock for the expected ACCEPT/REJECT response.
+
+  FUNCTION: add_incoming_pledge(realm, ip, port)
+  DOES: Acquires g_pledge_mutex, finds or creates an entry for realm, sets
+        status to PLEDGE_INCOMING_PENDING, and stores the origin IP and port.
+  USES: pthread_mutex_lock, pthread_mutex_unlock, find_pledge, strncpy.
+  WHY: Called by handle_alliance_dest after a valid sigil is received, so the
+       user can later respond with PLEDGE RESPOND.
+
+  FUNCTION: show_pledge_status()
+  DOES: Acquires the mutex, iterates all pledge entries, maps each status code
+        to a human-readable string, and prints "- realm: STATUS\n" for each.
+  USES: pthread_mutex_lock, pthread_mutex_unlock, printF, asprintf, free.
+  WHY: Implements the PLEDGE STATUS user command.
+
+  FUNCTION: get_pledge_status(realm)
+  DOES: Acquires the mutex, looks up realm, and returns its status integer or
+        -1 if not found.
+  USES: pthread_mutex_lock, pthread_mutex_unlock, find_pledge.
+  WHY: Used throughout the codebase to check alliance state before any
+       authenticated operation.
+
+  FUNCTION: update_pledge_status(realm, status)
+  DOES: Acquires the mutex and, if the realm is found, sets its status field.
+  USES: pthread_mutex_lock, pthread_mutex_unlock, find_pledge.
+  WHY: Used by handle_alliance_resp, apply_envoy_result, handle_disconnect,
+       and check_pledge_timeouts to transition alliance state.
+
+  FUNCTION: update_pledge_ip_port(realm, ip, port)
+  DOES: Acquires the mutex and, if found, stores ip and port into the pledge
+        entry for realm.
+  USES: pthread_mutex_lock, pthread_mutex_unlock, find_pledge, strncpy.
+  WHY: Called by handle_alliance_resp on ACCEPT to store the direct IP/port
+       of the now-allied realm so lookup_route can use it.
+
+  FUNCTION: get_pledge_ip_port(realm, ip_out, port_out)
+  DOES: Acquires the mutex, finds realm, copies its stored IP into ip_out and
+        port into *port_out. Returns 0 on success, -1 if not found or IP is
+        empty.
+  USES: pthread_mutex_lock, pthread_mutex_unlock, find_pledge, strncpy.
+  WHY: Used by lookup_route (direct ally route), send_pledge_response,
+       request_list_products, send_trade_request, and broadcast_shutdown.
+
+  FUNCTION: get_pledge_realm(index)
+  DOES: Returns the realm_name pointer at the given index (or NULL if out of
+        range), guarded by the mutex.
+  USES: pthread_mutex_lock, pthread_mutex_unlock.
+  WHY: Allows callers to iterate all pledges by index (e.g., broadcast_shutdown,
+       handle_disconnect) without exposing the internal array.
+
+  FUNCTION: get_pledge_count()
+  DOES: Returns pledge_count under the mutex.
+  USES: pthread_mutex_lock, pthread_mutex_unlock.
+  WHY: Enables safe iteration bounds for pledge table visitors.
+
+  FUNCTION: check_pledge_timeouts()
+  DOES: Acquires the mutex, gets the current time, and scans all
+        OUTGOING_PENDING entries. Any entry whose sent_time is at least 120
+        seconds in the past has its status set to PLEDGE_FAILED and a timeout
+        message is printed.
+  USES: time, pthread_mutex_lock, pthread_mutex_unlock, printF, asprintf.
+  WHY: Implements the 120-second alliance timeout required by the protocol: if
+       no ACCEPT/REJECT arrives in time, the pledge is automatically failed.
+
+================================================================================
+=== pledge/pledge.h ===
+================================================================================
+
+PURPOSE: Defines the Pledge struct, status constants, size limits, and
+declares all public pledge management functions. Also exports g_pledge_mutex
+so envoy.c and connection threads can reference it.
+
+KEY TYPES:
+  Pledge     - struct: realm_name[50], status (int), ip[16], port (int),
+               sent_time (time_t). Represents one alliance relationship.
+
+  PLEDGE_OUTGOING_PENDING (0) - sent PLEDGE, awaiting ACCEPT/REJECT
+  PLEDGE_ALLIED           (1) - alliance confirmed
+  PLEDGE_FAILED           (2) - REJECT or timeout
+  PLEDGE_INACTIVE         (3) - ally sent DISCONNECT (0x27)
+  PLEDGE_INCOMING_PENDING (4) - received PLEDGE, user must respond
+
+  MAX_PLEDGES      = 100 (maximum simultaneous pledge entries)
+  REALM_NAME_SIZE  = 50  (maximum realm name length)
+  IP_SIZE          = 16  (maximum IPv4 address string length including null)
+
+  g_pledge_mutex  - extern recursive pthread_mutex_t protecting the table
+
+================================================================================
+=== inventory/inventory.c ===
+================================================================================
+
+PURPOSE: Manages the local binary product inventory: loading from and writing
+to disk, displaying the trade ledger, applying stock deltas for trades,
+adding new products, and maintaining a cache of remote inventory data fetched
+from allied realms.
+
+  FUNCTION: load_inventory(path, total_products)
+  DOES: Opens the binary file at path, reads Product structs one by one into
+        a dynamically grown array, closes the file, stores the count in
+        *total_products, and returns the array.
+  USES: open, read, realloc, close, printF.
+  WHY: Loads the persistent stock database at startup so the Maester can
+       display and trade products.
+
+  FUNCTION: list_products(total_products, products)
+  DOES: Prints a formatted table header and then one row per product showing
+        name, amount, and weight. Prints a footer with the total count.
+  USES: asprintf, printF, free.
+  WHY: Implements the LIST PRODUCTS (own) user command.
+
+  FUNCTION: free_inventory(products)
+  DOES: Calls free on the products array.
+  USES: free.
+  WHY: Releases the heap memory occupied by the loaded inventory on exit.
+
+  FUNCTION: write_stock_file(path, products, count)
+  DOES: Opens path for writing (truncating), writes all count Product structs
+        sequentially, and closes the file. Returns 0 on success, -1 on error.
+  USES: open, write, close.
+  WHY: Persists any stock changes (from fulfilled trades) back to the binary
+       file so they survive process restart.
+
+  FUNCTION: apply_stock_delta(products, count, name, delta)
+  DOES: Finds the product with the given name (case-insensitive), adds delta
+        (positive or negative) to its amount, and returns 0. Returns -1 if
+        the product is not found or if the result would be negative.
+  USES: strcasecmp.
+  WHY: Used by handle_order_header to decrease stock when fulfilling an order.
+
+  FUNCTION: add_or_update_product(products, count, name, amount, weight)
+  DOES: Searches for an existing product by name; if found, adds amount to its
+        count. If not found, reallocs the array, initialises a new entry with
+        the given name, amount, and weight, and increments *count. Returns 0
+        on success, -1 on allocation failure.
+  USES: strcasecmp, realloc, malloc, memset, strncpy.
+  WHY: Used by send_trade_request to add newly purchased products to the
+       buyer's inventory.
+
+  FUNCTION: ri_set_products(cache, cache_count, realm, products, count)
+  DOES: Looks for an existing RemoteInventory entry for realm; if not found,
+        reallocates the cache array to add a new entry. Frees any existing
+        product array, copies the provided products into fresh heap memory,
+        and updates the entry. Returns the (possibly reallocated) cache pointer.
+  USES: strcasecmp, realloc, malloc, memcpy, strncpy, free.
+  WHY: Updates the remote inventory cache after a successful LIST PRODUCTS
+       operation so that START TRADE has fresh data to offer to the user.
+
+  FUNCTION: ri_get_products(cache, cache_count, realm, count_out)
+  DOES: Searches cache for realm (case-insensitive) and returns a pointer to
+        its Product array, setting *count_out. Returns NULL if not found.
+  USES: strcasecmp.
+  WHY: Used by collect_trade_items and send_trade_request to read cached
+       ally product data.
+
+  FUNCTION: ri_free_all(cache, cache_count)
+  DOES: Frees the product array inside every RemoteInventory entry, then
+        frees the cache array itself.
+  USES: free.
+  WHY: Cleans up the remote inventory cache on process exit.
+
+  FUNCTION: find_product(items, count, product)
+  DOES: Linear search of a TradeItem array for a product by exact name.
+        Returns the index if found, -1 otherwise.
+  USES: strcmp.
+  WHY: Used in collect_trade_items to detect whether a product has already
+       been added to the trade list so its quantity can be updated in place.
+
+  FUNCTION: is_number(str)
+  DOES: Returns 1 if every character of str is a digit '0'..'9', 0 otherwise.
+        Returns 0 for NULL or empty strings.
+  USES: (character comparison only)
+  WHY: Used in collect_trade_items to validate that the quantity argument is
+       a non-negative integer before calling atoi.
+
+  FUNCTION: free_trade_items(items, count)
+  DOES: Frees the heap-allocated name field inside each TradeItem, then frees
+        the items array.
+  USES: free.
+  WHY: Called after a trade is dispatched or cancelled to prevent memory leaks
+       from the dynamically allocated trade list.
+
+  FUNCTION: collect_trade_items(realm, maester, own_products, own_count,
+                                  cache, cache_count, items_out, count_out)
+  DOES: Takes a snapshot of the ally's cached products under g_data_mutex,
+        then enters an interactive sub-menu loop reading commands from stdin.
+        Accepts ADD <PRODUCT> <AMOUNT>, REMOVE <PRODUCT> <AMOUNT>, SEND, and
+        CANCEL. Validates each product against the ally's cached list. On SEND
+        (with at least one item), returns 1 and passes ownership of the
+        selected TradeItem array to *items_out. On CANCEL or error returns 0.
+  USES: g_data_mutex, ri_get_products, read_screen, to_upper, find_product,
+        realloc, strdup, free_trade_items, printF, asprintf.
+  WHY: Provides the interactive trade negotiation session in which the user
+       selects which products and quantities to order before the envoy is
+       dispatched.
+
+================================================================================
+=== inventory/inventory.h ===
+================================================================================
+
+PURPOSE: Defines the Product, RemoteInventory, and TradeItem structs and
+declares all inventory and trade item management functions.
+
+KEY TYPES:
+  Product        - struct: name[100] (product name), int amount (units),
+                   float weight (weight in stone). Stored as fixed-size binary
+                   records in the stock .bin file.
+  RemoteInventory - struct: realm_name[REALM_NAME_SIZE], Product *products,
+                   int count. Holds a cached copy of an ally's product list.
+  TradeItem      - struct: char *name (heap-allocated), int amount. Represents
+                   one line in a user's pending trade order.
+
+================================================================================
+=== envoy/envoy.c ===
+================================================================================
+
+PURPOSE: Implements the Envoy concurrency pool. Each envoy slot can hold one
+forked child process running an outgoing network mission (PLEDGE, LIST PRODUCTS,
+START TRADE, or PLEDGE RESPOND). The parent's select() loop monitors each active
+envoy's pipe; when data arrives it calls apply_envoy_result to read the result,
+apply state mutations, reap the child, and free the slot.
+
+  FUNCTION: child_reinit_mutexes()  [static, atfork handler]
+  DOES: Re-initialises g_data_mutex and g_pledge_mutex in the child process
+        after fork so they start in an unlocked state regardless of the
+        locking state in the parent at fork time.
+  USES: pthread_mutex_init.
+  WHY: Avoids deadlock in child processes that call pledge or inventory
+       functions if a mutex was held by a different thread at fork time.
+
+  FUNCTION: child_pledge(result_fd, realm, sigil, maester)  [static]
+  DOES: Calls send_pledge; writes a PipeMsgHeader with type PIPE_PLEDGE_OK or
+        PIPE_PLEDGE_FAIL and the realm name to result_fd, then calls _exit(0).
+  USES: send_pledge, memset, write_all, close, _exit.
+  WHY: Performs the blocking PLEDGE mission in a child process so the parent's
+       select() loop remains responsive.
+
+  FUNCTION: child_list(result_fd, realm, maester, products, total_products,
+                        cache, cache_count)  [static]
+  DOES: Calls request_list_products with local cache copies; reads the updated
+        cache, writes a PipeMsgHeader followed by the Product array to
+        result_fd, then _exit(0).
+  USES: request_list_products, ri_get_products, write_all, _exit.
+  WHY: Performs the blocking LIST PRODUCTS exchange in a child process and
+       returns the product array to the parent via pipe.
+
+  FUNCTION: child_trade(result_fd, realm, maester, products, total_products,
+                         items, count, cache, cache_count, idx)  [static]
+  DOES: Calls send_trade_request; writes a PipeMsgHeader with PIPE_TRADE_OK
+        or PIPE_TRADE_FAIL. On success also writes the updated product array.
+        Calls free_trade_items and _exit(0).
+  USES: send_trade_request, write_all, free_trade_items, _exit.
+  WHY: Performs the blocking trade mission in a child process and transfers
+       the modified stock back to the parent.
+
+  FUNCTION: child_respond(result_fd, realm, response, maester)  [static]
+  DOES: Calls send_pledge_response; writes a PIPE_RESPOND_DONE header with
+        count set to the new pledge status, then _exit(0).
+  USES: send_pledge_response, write_all, _exit.
+  WHY: Handles the PLEDGE RESPOND send operation asynchronously.
+
+  FUNCTION: apply_envoy_result(idx)
+  DOES: Reads a PipeMsgHeader from the envoy's pipe. Depending on the type:
+        PIPE_LIST_OK reads the product array and calls ri_set_products under
+        g_data_mutex; PIPE_TRADE_OK reads the product array and replaces the
+        parent's global products pointer under g_data_mutex; PIPE_PLEDGE_OK
+        calls add_outgoing_pledge and keeps the slot reserved (awaiting 0x03);
+        PIPE_RESPOND_DONE calls update_pledge_status; FAIL types print error
+        messages. Always calls waitpid to reap the child, closes the pipe, and
+        frees the slot (unless kept for PLEDGE). Calls notify_prompt().
+  USES: read_all, ri_set_products, g_data_mutex, add_outgoing_pledge,
+        update_pledge_status, waitpid, close, notify_prompt, printF.
+  WHY: The bridge between child worker results and the parent's shared state;
+       ensures that inventory and pledge updates happen on the main thread side
+       under appropriate locks.
+
+  FUNCTION: init_envoys(count, maester, products, total_products, cache,
+                          cache_count)
+  DOES: Allocates count Envoy structs, initialises each to ENVOY_FREE state,
+        stores all shared-state pointers, and registers child_reinit_mutexes
+        as the pthread_atfork child handler.
+  USES: calloc, pthread_atfork.
+  WHY: Must be called once before the terminal loop to set up the envoy pool
+       and install the fork safety handler.
+
+  FUNCTION: find_free_envoy()
+  DOES: Scans g_envoys for the first entry with mission ENVOY_FREE and returns
+        its index, or -1 if all are occupied.
+  USES: (array scan only)
+  WHY: Used by the terminal loop before dispatching any outgoing mission to
+       check that a worker slot is available.
+
+  FUNCTION: reserve_envoy(idx, mission, realm)
+  DOES: Sets the slot's mission and realm without forking.
+  USES: strncpy.
+  WHY: Used by START TRADE to hold a slot during the interactive sub-menu
+       (collect_trade_items) before dispatch_trade is called.
+
+  FUNCTION: release_envoy(idx)
+  DOES: Resets a slot back to ENVOY_FREE and clears pid, pipe_read_fd, and
+        realm.
+  USES: (struct assignment only)
+  WHY: Used when a reserved slot is cancelled (user typed CANCEL in trade
+       sub-menu) or when a fork fails.
+
+  FUNCTION: dispatch_pledge(idx, realm, sigil)
+  DOES: Sets the slot to ENVOY_PLEDGE, creates a pipe, forks. The child calls
+        child_pledge and exits; the parent closes the write end and stores the
+        pid and read fd.
+  USES: pipe, fork, child_pledge, close.
+  WHY: Starts an asynchronous PLEDGE mission without blocking the terminal.
+
+  FUNCTION: dispatch_list_products(idx, realm)
+  DOES: Sets the slot to ENVOY_LIST, creates a pipe, forks. The child passes
+        local copies of the cache pointer to child_list; the parent stores the
+        pid and read fd.
+  USES: pipe, fork, child_list, close.
+  WHY: Starts an asynchronous LIST PRODUCTS mission.
+
+  FUNCTION: dispatch_trade(idx, realm, items, count)
+  DOES: Creates a pipe, forks. The child passes local product and cache copies
+        to child_trade. The parent frees its copy of items (the child has
+        its own fork copy) and stores the pid and read fd.
+  USES: pipe, fork, child_trade, free_trade_items, close.
+  WHY: Starts an asynchronous trade mission; freeing items in the parent is
+       safe because copy-on-write semantics give the child its own copy.
+
+  FUNCTION: dispatch_pledge_respond(idx, realm, response)
+  DOES: Sets the slot to ENVOY_RESPOND, creates a pipe, forks. The child
+        calls child_respond with a local copy of the response string.
+  USES: pipe, fork, child_respond, close.
+  WHY: Handles PLEDGE RESPOND asynchronously so the terminal is not blocked
+       while waiting for the originator to acknowledge.
+
+  FUNCTION: check_pledge_envoys()
+  DOES: Scans all ENVOY_PLEDGE slots whose pid is -1 (child has already
+        exited). If the pledge for that realm is no longer OUTGOING_PENDING
+        (was accepted, rejected, or timed out), releases the slot and calls
+        notify_prompt.
+  USES: get_pledge_status, notify_prompt.
+  WHY: Frees pledge envoy slots after the alliance has been resolved; called
+       each select() iteration alongside check_pledge_timeouts.
+
+  FUNCTION: get_envoy_pipe_fd(idx)
+  DOES: Returns g_envoys[idx].pipe_read_fd, or -1 if idx is out of range.
+  USES: (array access only)
+  WHY: Called by the terminal loop to build the fd_set for select().
+
+  FUNCTION: show_envoy_status()
+  DOES: Iterates g_envoys and prints "Envoy N: FREE" or "Envoy N: ON MISSION
+        (type to realm)" for each slot.
+  USES: asprintf, printF, free.
+  WHY: Implements the ENVOY STATUS user command.
+
+  FUNCTION: wait_all_envoys()
+  DOES: For each slot with a live pid calls apply_envoy_result; for slots
+        reserved but pid-less (awaiting 0x03 response) calls release_envoy.
+  USES: apply_envoy_result, release_envoy.
+  WHY: Called on EXIT to drain all in-flight envoy results before freeing
+       shared memory.
+
+  FUNCTION: free_envoys()
+  DOES: Closes any remaining pipe file descriptors, destroys g_data_mutex,
+        frees the envoy array, and resets g_count.
+  USES: close, pthread_mutex_destroy, free.
+  WHY: Releases all envoy resources on process exit.
+
+================================================================================
+=== envoy/envoy.h ===
+================================================================================
+
+PURPOSE: Defines the EnvoyMission enum and the Envoy struct, declares
+g_pledge_mutex and g_data_mutex (the two global mutexes), and declares all
+public envoy lifecycle, dispatch, and accessor functions.
+
+KEY TYPES:
+  EnvoyMission enum:
+    ENVOY_FREE    (0) - slot is idle
+    ENVOY_PLEDGE  (1) - running a PLEDGE mission
+    ENVOY_LIST    (2) - running a LIST PRODUCTS mission
+    ENVOY_TRADE   (3) - running a TRADE mission
+    ENVOY_RESPOND (4) - running a PLEDGE RESPOND mission
+
+  Envoy struct:
+    id           - 1-based display number
+    mission      - current EnvoyMission
+    realm[50]    - target realm name
+    pid          - child PID (-1 if no child running)
+    pipe_read_fd - parent's read end of result pipe (-1 if not active)
+
+  g_pledge_mutex - extern recursive pthread mutex protecting the pledge table
+  g_data_mutex   - extern pthread mutex protecting products[] and cache
+
+================================================================================
+=== envoy/pipe_msg.h ===
+================================================================================
+
+PURPOSE: Defines the child-to-parent pipe message protocol used by all Envoy
+workers. Provides the PipeMsgType enum, PipeMsgHeader struct, and inline
+helper functions for complete pipe reads and writes.
+
+KEY TYPES:
+  PipeMsgType enum:
+    PIPE_PLEDGE_OK    - sigil sent successfully; pledge awaits response
+    PIPE_PLEDGE_FAIL  - pledge failed (connection error or bad sigil)
+    PIPE_LIST_OK      - product list received; count Product structs follow
+    PIPE_LIST_FAIL    - list request failed
+    PIPE_TRADE_OK     - order accepted; count Product structs (new stock) follow
+    PIPE_TRADE_FAIL   - trade rejected or failed
+    PIPE_RESPOND_DONE - response sent; count = new pledge status code
+
+  PipeMsgHeader struct:
+    type     - PipeMsgType
+    realm[50]- target realm name
+    count    - number of Product structs following in the pipe (for list/trade)
+
+  write_all(fd, buf, n) [static inline]
+    Writes exactly n bytes to fd, retrying on partial writes. Returns 0 on
+    success, -1 on error.
+
+  read_all(fd, buf, n) [static inline]
+    Reads exactly n bytes from fd, retrying on partial reads. Returns 0 on
+    success, -1 on EOF or error.
+
+================================================================================
+END OF CODEBASE DOCUMENTATION
+================================================================================

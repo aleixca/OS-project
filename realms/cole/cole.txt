@@ -1,0 +1,11 @@
+Cole
+realms/cole
+1
+192.168.1.4
+8822
+--- ROUTES ---
+Baratheon 192.168.1.4 8821
+Arryn 192.168.1.3 8820
+Dustin 192.168.1.4 8821
+Greyjoy 192.168.1.4 8821
+DEFAULT 192.168.1.4 8821
